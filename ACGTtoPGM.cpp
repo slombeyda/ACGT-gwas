@@ -4,6 +4,7 @@
 #include <math.h>
 
 #define strequals(src,dst) (!strcmp(src,dst))
+#define debug(s)            fprintf(stderr,"%s\n",(s))
 #define null NULL
 #define DEBUG false
 
@@ -47,6 +48,8 @@ int outmode=MODE_COUNT_ONLY;
 
 FILE * fout=stdout;
 
+
+
 unsigned char allell(char cmajor,char cminor) {
     unsigned char c=0;
          if (cmajor=='A') c=MAJOR_A;
@@ -59,6 +62,8 @@ unsigned char allell(char cmajor,char cminor) {
     else if (cminor=='T') c+=MINOR_T;
     return c;
 }
+
+
 
 unsigned char headerallell(char *s) {
     int i=0;
@@ -76,6 +81,7 @@ unsigned char headerallell(char *s) {
 }
 
 
+
 int tabber(char *s) {
   char c=getchar();
   int i=0;
@@ -91,6 +97,11 @@ int tabber(char *s) {
   return READ_TO_EOF;
 }
 
+
+
+
+
+
 int  count=0;
 long missingdata=0;
 
@@ -104,6 +115,8 @@ void readDBAllells() {
                        readbuffer[1],
                        (unsigned int)DB_ALLELLS[index]);
 }
+
+
 
 void processPatientAllells() {
     if (dataoutmode==DATA_OUT_MODE_ASCII) {
@@ -133,24 +146,40 @@ void processPatientAllells() {
     }
 }
 
+int ninfocols=5;
+void processNextDataToken(int w, int nlines) {
+  // if reading HEADER row
+  if (w<1) {
+    if (count>=ninfocols) readDBAllells();
+  // if need to process as we read
+  } else if (outmode!=MODE_COUNT_ONLY && w>1) {
+    if (targetpatient<0 || targetpatient==nlines-1)
+      if (count>=ninfocols)
+        processPatientAllells();
+  }
+  count++;
+}
 
 int main (int nargs, char **args) {
   int  marker=0;
   int  nlines=0;
   int  w=-1;
+  int  sqrt_w=0;
+  int  sqrt_h=0;
   int  nchar=0;
 
   for (int i=1; i<nargs; i++) {
     if (strequals(args[i],"-h")) {
-       printf("usage : %s -counts | -pgm | -bin\n",args[0]);
+       printf("usage : %s -counts | -pgm | -bin [-chr <n>] [-allpatients | -patient <i>]\n",args[0]);
        return 0;
-    } else if (strequals(args[i],"-counts")) {
+    } else if (strequals(args[i],"-counts") || strequals(args[i],"-countonly")) {
+       outmode=MODE_COUNT_ONLY;
        outmode=MODE_COUNT_ONLY;
     } else if (strequals(args[i],"-pgm")) {
        outmode=MODE_PGM;
     } else if (strequals(args[i],"-bin")) {
        outmode=MODE_BIN;
-    } else if (strequals(args[i],"-nchar")) {
+    } else if (strequals(args[i],"-nchr") || strequals(args[i],"-chr")) {
        sscanf(args[++i],"%i",&nchar);
     } else if (strequals(args[i],"-allpatients")) {
         targetpatient=PATIENT_ALL;
@@ -165,52 +194,60 @@ int main (int nargs, char **args) {
     }
   }
 
-  if (outmode!=MODE_COUNT_ONLY)
-    DB_ALLELLS= (unsigned char *)malloc(524288);
+  //if (outmode!=MODE_COUNT_ONLY) // always store DB.. need to dump json info
+  DB_ALLELLS= (unsigned char *)malloc(524288);
+
 
   while ((marker=tabber(readbuffer))!=READ_TO_EOF) {
-    if (marker==READ_TO_TAB) {
-      if (outmode!=MODE_COUNT_ONLY && w>1) {
-        if (targetpatient<0 || targetpatient==nlines-1)
-          if (count>4)
-            processPatientAllells();
-      } else if (w<1){
-        if (count>4) readDBAllells();
-      }
-      count++;
-    } else { // NEWLINE
-      if (outmode==MODE_COUNT_ONLY) printf("%i\n",count);
+    processNextDataToken(w,nlines);
+    if (marker==READ_TO_NL) {
+      if (outmode==MODE_COUNT_ONLY)
+         printf("%5i: %8i [%i]\n",nlines,count,count-ninfocols);
       if (w<0) {
-         w=count;
-         readDBAllells();
-         // should create target file
-         // sprintf(outfile,"patient.%04i.pgm",nlines);
-         // outfile=fopen(outfilename,"wb");
+         // process last one in row
+         w=count-ninfocols;
+         sqrt_w=(int)sqrt(w);
+         sqrt_h = (int)((w)/sqrt_w);
+         fprintf(stderr,"%i -> %i x %i\n",w,sqrt_w,sqrt_h);
          if (outmode!=MODE_COUNT_ONLY) {
-           if (fout!=null && fout!=stdout)
-             fclose(fout);
-           char filename[32];
-           snprintf(filename,32,"p%04i.c%03i.%s",nlines,nchar,outmode==MODE_PGM?"pgm":"bin");
-           //fout=fopen(finename,"wb");
+           if (fout!=null && fout!=stdout) fclose(fout);
+           fout=null;
+           // guarantee: nlines==0 because w<0
+           if (targetpatient<0 || targetpatient==0) {
+             char filename[32];
+             snprintf(filename,32,"p%04i.c%03i.%s",nlines,nchar,outmode==MODE_PGM?"pgm":"bin");
+             fprintf(stderr,"Creating file %s for patient %i\n",filename,nlines);
+             fout=fopen(filename,"wb");
+           } else debug("not creating file for patient 0");
          }
-         if (outmode==MODE_PGM) {
-             int sqrt_w=(int)sqrt(w);
-             int sqrt_w_reminder = (int)(w/sqrt_w);
-             // NOTE: EXTRA REMINDER: w%sqrt_w_reminder -> may need to add row
-             fprintf(fout,"P5\n#CRIC %i\n%i %i\n255\n",w-5,sqrt_w,sqrt_w_reminder);
+         if (outmode==MODE_PGM && fout!=null) {
+             // NOTE: EXTRA REMINDER: w%sqrt_h -> may need to add row
+             fprintf(fout,"P5\n#CRIC %i\n%i %i\n255\n",w-ninfocols,sqrt_w,sqrt_h);
          }
       } else if (outmode!=MODE_COUNT_ONLY) {
-        if (targetpatient<0 || targetpatient==nlines-1)
-           processPatientAllells();
-        // should start new output file?
-        if (targetpatient==nlines-1) return 0;
-      } else {
+        if (fout!=null && fout!=stdout)
+            fclose(fout);
+        if (targetpatient<0 || targetpatient==nlines) {
+            char filename[32];
+            snprintf(filename,32,"p%04i.c%03i.%s",nlines,nchar,outmode==MODE_PGM?"pgm":"bin");
+            fprintf(stderr,"+ %s\n",filename);
+            fout=fopen(filename,"wb");
+        } else fprintf(stderr,"not creating file for patient %i\n",nlines);
+        if (outmode==MODE_PGM && fout!=null)
+             fprintf(fout,"P5\n#CRIC %i\n%i %i\n255\n",w-5,sqrt_w,sqrt_h);
+
+        if (targetpatient>=0 && targetpatient==nlines-1) {
+            debug("One and done.");
+            return 0;
+        }
       }
       count=0;
       nlines++;
     }
   }
+  if (fout!=null && fout!=stdout) fclose(fout);
   if (missingdata>0) fprintf(stderr,"Warning: missing data at %li places.\n",missingdata);
+  //if (outmode==MODE_COUNT_ONLY) printf("%5i: %8i\n",nlines,count);
   if (outmode==MODE_COUNT_ONLY) printf("\n%i\n",nlines);
   return 0;
 }
